@@ -1,3 +1,4 @@
+//full setup and pin definition along with setting variable constants 
 #include <Wire.h>
 #include <FastLED.h>
 #include <Servo.h>
