@@ -1,5 +1,5 @@
 #include "Robot.h"
-
+//setup for motors and gyro
 void setupMotors()
 {
   pinMode(PWR_L, OUTPUT);
@@ -72,7 +72,7 @@ void resetAngle()
   angle = 0;
   lastTime = millis();
 }
-
+//movement controls using motors and gyro for perfect straight driving and turns
 void moveMotors(int leftSpeed, int rightSpeed)
 {
   digitalWrite(MTR_L, leftSpeed >= 0 ? HIGH : LOW);
