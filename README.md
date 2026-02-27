@@ -4,7 +4,7 @@ This is a Github repositroy that contains code dealing with the sensors, motors 
 ## How to run
 
 #### First you need these key resources
-[Smart car robot link](https://www.elegoo.com/blogs/arduino-projects/elegoo-smart-robot-car-kit-v4-0-tutorial?srsltid=AfmBOoqn-qBqnSIaAcDy842MfXGA_dFm8mD5bX5J9NB-plZlTgztCLJc) and any Compatable Ide that supports arduino Uno we prefered to use and recommend ([Arduino IDE](https://docs.arduino.cc/software/ide/))
+[Smart car robot link](https://www.elegoo.com/blogs/arduino-projects/elegoo-smart-robot-car-kit-v4-0-tutorial?srsltid=AfmBOoqn-qBqnSIaAcDy842MfXGA_dFm8mD5bX5J9NB-plZlTgztCLJc) and any Compatible IDE that supports Arduino Uno we prefered to use and recommend ([Arduino IDE](https://docs.arduino.cc/software/ide/))
 
 Then in order to actually run code in the ide and upload it into your robot. You will need to charge your robot and then take any existing code or your own writen code that works with your robots pins. Then with the code in your ide set up to upload port to your desired usb port. Plug the robot in to your laptop and click upload if there are no errors in your code the robot should run the code when turned on after upload.
 
