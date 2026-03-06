@@ -1,5 +1,4 @@
 #include "Robot.h"
-#include "motors.cpp"
 //function to use the ultra sonic sensor to get distance
 int getDistance() {
   digitalWrite(US_OUT, LOW);
