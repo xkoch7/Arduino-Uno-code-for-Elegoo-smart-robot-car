@@ -26,7 +26,7 @@
 // How far before robot stops and sweeps to decide wall or object
 #define DETECTION_RANGE 15
 
-// How much closer the nearest angle must be vs average to count as an object not a wall
+// How much closer the nearest angle must be vs average to count as an object
 #define OBJECT_THRESHOLD 10
 
 // Stop this close to whatever is being followed
@@ -35,8 +35,8 @@
 // If closest reading goes above this during follow, object is gone
 #define FOLLOW_LOST_DIST 40
 
-// Servo sweep speed during follow mode
-#define SERVO_SWEEP_SPEED 0.05
+// How long to settle at each angle during follow sweep (ms)
+#define FOLLOW_ANGLE_DELAY 100
 
 CRGB leds[NUM_LEDS];
 Servo scanServo;
@@ -52,9 +52,6 @@ unsigned long lastTime = 0;
 int scanAngles[SCAN_POINTS]    = {-90, -60, -30, 0, 30, 60, 90};
 int scanDistances[SCAN_POINTS] = {999, 999, 999, 999, 999, 999, 999};
 int memory[SCAN_POINTS]        = {0};
-
-float servoPhase = 0.0;
-unsigned long lastServoUpdate = 0;
 
 bool following = false;
 int followAngleIndex = 3;
@@ -184,18 +181,7 @@ void setServoLogical(int ang) {
   scanServo.write(constrain(ang, -90, 90) + 90);
 }
 
-void sweepServo() {
-  unsigned long now = millis();
-  servoPhase += ((now - lastServoUpdate) / 1000.0) * SERVO_SWEEP_SPEED * TWO_PI;
-  lastServoUpdate = now;
-  if (servoPhase > TWO_PI) servoPhase -= TWO_PI;
-  setServoLogical((int)(sin(servoPhase) * 90));
-}
-
 // ===================== DETECTION SWEEP =====================
-// Sweeps all angles, returns index of closest reading if it is
-// OBJECT_THRESHOLD closer than the average of all other angles.
-// Returns -1 if nothing stands out meaning it is likely a wall.
 
 int detectionSweep() {
   for (int i = 0; i < SCAN_POINTS; i++) {
@@ -204,9 +190,7 @@ int detectionSweep() {
     scanDistances[i] = getDistance();
   }
 
-  // Find closest angle
-  int closestIndex = 0;
-  int closestDist = 999;
+  int closestIndex = 0, closestDist = 999;
   for (int i = 0; i < SCAN_POINTS; i++) {
     if (scanDistances[i] < closestDist) {
       closestDist = scanDistances[i];
@@ -214,20 +198,15 @@ int detectionSweep() {
     }
   }
 
-  // Average all other angles
-  long sum = 0;
-  int count = 0;
+  long sum = 0; int count = 0;
   for (int i = 0; i < SCAN_POINTS; i++) {
     if (i == closestIndex) continue;
     if (scanDistances[i] < 999) { sum += scanDistances[i]; count++; }
   }
 
-  // If nothing else registered just treat as wall
   if (count == 0) return -1;
 
   int avg = sum / count;
-
-  // If closest is meaningfully shorter than everything else it is an object
   if ((avg - closestDist) >= OBJECT_THRESHOLD) return closestIndex;
 
   return -1;
@@ -282,7 +261,6 @@ void setup() {
 void loop() {
   updateGyro();
 
-  // White line = hard stop
   if (analogRead(LEFT) <= L_TH && analogRead(MIDDLE) <= M_TH && analogRead(RIGHT) <= R_TH) {
     stopMotors();
     leds[0] = leds[1] = CRGB::White;
@@ -301,12 +279,10 @@ void loop() {
     int objectIndex = detectionSweep();
 
     if (objectIndex >= 0) {
-      // Closest point stands out - treat as object and follow it
       following = true;
       followAngleIndex = objectIndex;
 
     } else {
-      // Nothing stands out - treat as wall
       following = false;
 
       scanEnvironment();
@@ -340,15 +316,14 @@ void loop() {
     leds[0] = leds[1] = CRGB::Cyan;
     FastLED.show();
 
-    // Sweep and update distances
-    sweepServo();
-    int currentServoAngle = (int)(sin(servoPhase) * 90);
+    // Discrete sweep - one reading per angle back to back
     for (int i = 0; i < SCAN_POINTS; i++) {
-      if (abs(currentServoAngle - scanAngles[i]) <= 2)
-        scanDistances[i] = getDistance();
+      setServoLogical(scanAngles[i]);
+      delay(FOLLOW_ANGLE_DELAY);
+      scanDistances[i] = getDistance();
     }
 
-    // Always chase the closest angle
+    // Find closest angle
     int cd = 999;
     for (int i = 0; i < SCAN_POINTS; i++) {
       if (scanDistances[i] < cd) {
