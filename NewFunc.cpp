@@ -23,9 +23,9 @@
 #define GYRO 0x68
 #define SCAN_POINTS 7
 #define DETECTION_RANGE 15
-#define OPEN_THRESHOLD 10
-#define OPEN_MIN 30
-#define FOLLOW_STOP 12
+#define SEEK_MIN 25
+#define SEEK_MAX 200
+#define SEEK_THRESHOLD 15
 
 CRGB leds[NUM_LEDS];
 Servo scanServo;
@@ -213,11 +213,11 @@ int findBestDirection()
 int findOpenSpace()
 {
   int furthestIndex = -1;
-  int furthestDist  = OPEN_MIN;
+  int furthestDist  = SEEK_MIN;
 
   for(int i = 1; i < SCAN_POINTS - 1; i++)
   {
-    if(scanDistances[i] > furthestDist && scanDistances[i] < 999)
+    if(scanDistances[i] > furthestDist && scanDistances[i] < SEEK_MAX)
     {
       furthestDist  = scanDistances[i];
       furthestIndex = i;
@@ -237,7 +237,7 @@ int findOpenSpace()
   if(count == 0) return -1;
 
   int avg = sum / count;
-  if(furthestDist - avg >= OPEN_THRESHOLD) return furthestIndex;
+  if(furthestDist - avg >= SEEK_THRESHOLD) return furthestIndex;
 
   return -1;
 }
@@ -301,112 +301,4 @@ void loop()
   if(L <= L_TH && M <= M_TH && R <= R_TH)
   {
     stopMotors();
-    leds[0] = leds[1] = CRGB::White;
-    FastLED.show();
-    while(1);
-  }
-
-  int distance = getDistance();
-
-  if(numerOfRights > 5)
-  {
-    turnLeft90();
-    numerOfRights = 0;
-  }
-
-  if(numerOfLefts > 5)
-  {
-    turnRight90();
-    numerOfLefts = 0;
-  }
-
-  if(distance < DETECTION_RANGE)
-  {
-    leds[0] = leds[1] = CRGB::Blue;
-    FastLED.show();
-
-    stopMotors();
-    delay(200);
-
-    scanEnvironment();
-
-    int openIndex = findOpenSpace();
-
-    if(openIndex >= 0)
-    {
-      seeking = true;
-      seekIndex = openIndex;
-
-      leds[0] = leds[1] = CRGB::Cyan;
-      FastLED.show();
-
-      turnToAngle(scanAngles[seekIndex]);
-    }
-    else
-    {
-      seeking = false;
-
-      int bestAngle = findBestDirection();
-
-      if(bestAngle > 20)
-      {
-        leds[0] = leds[1] = CRGB::Red;
-        FastLED.show();
-        moveMotors(-80, -80);
-        delay(400);
-        stopMotors();
-        delay(200);
-        turnRight90();
-        numerOfRights++;
-        lastTurn = 1;
-      }
-      else if(bestAngle < -20)
-      {
-        leds[0] = leds[1] = CRGB::Purple;
-        FastLED.show();
-        moveMotors(-80, -80);
-        delay(400);
-        stopMotors();
-        delay(200);
-        turnLeft90();
-        numerOfLefts++;
-        lastTurn = -1;
-      }
-      else
-      {
-        if(lastTurn == 1)
-        {
-          leds[0] = leds[1] = CRGB::Yellow;
-          FastLED.show();
-          moveMotors(-80, -80);
-          delay(400);
-          stopMotors();
-          delay(200);
-          turnLeft90();
-          lastTurn = -1;
-        }
-        else
-        {
-          leds[0] = leds[1] = CRGB::Orange;
-          FastLED.show();
-          moveMotors(-80, -80);
-          delay(400);
-          stopMotors();
-          delay(200);
-          turnRight90();
-          lastTurn = 1;
-        }
-      }
-      resetAngle();
-    }
-  }
-  else
-  {
-    seeking = false;
-    leds[0] = leds[1] = CRGB::Green;
-    FastLED.show();
-    int speed = map(distance, 10, 80, 60, 150);
-    speed = constrain(speed, 60, 150);
-    driveStraight(speed);
-  }
-}
+    leds[0] = leds[1] =
