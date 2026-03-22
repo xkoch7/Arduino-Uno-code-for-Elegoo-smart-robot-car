@@ -26,17 +26,11 @@
 // How far before robot stops and scans
 #define DETECTION_RANGE 15
 
-// How much closer one angle must be vs the rest to count as an object not a wall
+// How much closer one angle must be vs the wall to count as a separate object
 #define OBJECT_THRESHOLD 10
 
 // Stop this close to whatever is being followed
 #define FOLLOW_STOP_DIST 12
-
-// If closest reading goes above this during follow, object is gone
-#define FOLLOW_LOST_DIST 40
-
-// How long to settle at each angle during follow sweep (ms)
-#define FOLLOW_ANGLE_DELAY 100
 
 CRGB leds[NUM_LEDS];
 Servo scanServo;
@@ -203,29 +197,22 @@ int findBestDirection() {
   return scanAngles[bestIndex];
 }
 
-// Checks if any angle from the scan is significantly closer than
-// the average of all others - if yes that angle is an object not a wall
+// Returns index of angle that is OBJECT_THRESHOLD closer than
+// the forward reading (index 3). Returns -1 if nothing stands out.
 int findObject() {
-  int closestIndex = 0, closestDist = 999;
+  int wallDist = scanDistances[3]; // forward = the wall we drove into
+  int closestIndex = -1;
+  int closestDist = wallDist - OBJECT_THRESHOLD;
+
   for (int i = 0; i < SCAN_POINTS; i++) {
+    if (i == 3) continue;
     if (scanDistances[i] < closestDist) {
       closestDist = scanDistances[i];
       closestIndex = i;
     }
   }
 
-  long sum = 0; int count = 0;
-  for (int i = 0; i < SCAN_POINTS; i++) {
-    if (i == closestIndex) continue;
-    if (scanDistances[i] < 999) { sum += scanDistances[i]; count++; }
-  }
-
-  if (count == 0) return -1;
-
-  int avg = sum / count;
-  if ((avg - closestDist) >= OBJECT_THRESHOLD) return closestIndex;
-
-  return -1;
+  return closestIndex;
 }
 
 // ===================== SETUP =====================
@@ -264,23 +251,34 @@ void loop() {
 
   int dist = getDistance();
 
-  // ---- SOMETHING CLOSE - scan and decide ----
-  if (dist < DETECTION_RANGE && !following) {
+  // ---- SOMETHING CLOSE - scan once and decide ----
+  if (dist < DETECTION_RANGE) {
     stopMotors();
     leds[0] = leds[1] = CRGB::Yellow;
     FastLED.show();
 
-    // One scan gives us everything we need
     scanEnvironment();
     int objectIndex = findObject();
 
     if (objectIndex >= 0) {
-      // One angle stood out as much closer than the rest - follow it
+      // Something closer than the wall at this angle - turn and drive to it
       following = true;
       followAngleIndex = objectIndex;
 
+      leds[0] = leds[1] = CRGB::Cyan;
+      FastLED.show();
+
+      // Turn to face that angle
+      if (scanAngles[followAngleIndex] > 20) {
+        turnRight90();
+      } else if (scanAngles[followAngleIndex] < -20) {
+        turnLeft90();
+      }
+      resetAngle();
+
     } else {
-      // All angles similar - it is a wall, pick best direction
+      // Nothing closer than wall - standard wall avoidance
+      following = false;
       int bestAngle = findBestDirection();
 
       moveMotors(-80, -80);
@@ -306,57 +304,18 @@ void loop() {
       resetAngle();
     }
 
-  // ---- FOLLOW MODE ----
-  } else if (following) {
-    leds[0] = leds[1] = CRGB::Cyan;
-    FastLED.show();
-
-    // Discrete sweep to find where object is now
-    for (int i = 0; i < SCAN_POINTS; i++) {
-      setServoLogical(scanAngles[i]);
-      delay(FOLLOW_ANGLE_DELAY);
-      scanDistances[i] = getDistance();
-    }
-
-    // Chase the closest angle
-    int cd = 999;
-    for (int i = 0; i < SCAN_POINTS; i++) {
-      if (scanDistances[i] < cd) {
-        cd = scanDistances[i];
-        followAngleIndex = i;
-      }
-    }
-
-    // Object gone - return to roam
-    if (cd > FOLLOW_LOST_DIST) {
-      following = false;
-      return;
-    }
-
-    if (cd < FOLLOW_STOP_DIST) {
-      stopMotors();
-      return;
-    }
-
-    float steer   = scanAngles[followAngleIndex] / 90.0;
-    int baseSpeed = map(cd, FOLLOW_STOP_DIST, FOLLOW_LOST_DIST, 50, 120);
-    int steerAmt  = (int)(steer * 70);
-
-    if (abs(scanAngles[followAngleIndex]) >= 60) {
-      scanAngles[followAngleIndex] > 0 ? turnRight90() : turnLeft90();
-      resetAngle();
-    } else {
-      moveMotors(constrain(baseSpeed + steerAmt, 0, 255),
-                 constrain(baseSpeed - steerAmt, 0, 255));
-    }
-
-  // ---- ROAM MODE ----
+  // ---- DRIVE - either roaming or heading toward object ----
   } else {
     if (numerOfRights > 5) { turnLeft90(); numerOfRights = 0; }
     if (numerOfLefts  > 5) { turnRight90(); numerOfLefts = 0; }
 
-    leds[0] = leds[1] = CRGB::Green;
+    if (following) {
+      leds[0] = leds[1] = CRGB::Cyan;
+    } else {
+      leds[0] = leds[1] = CRGB::Green;
+    }
     FastLED.show();
+
     int speed = constrain(map(dist, 10, 80, 60, 150), 60, 150);
     driveStraight(speed);
   }
