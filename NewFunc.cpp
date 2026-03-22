@@ -38,7 +38,7 @@ float angle = 0;
 float gyroOffset = 0;
 unsigned long lastTime = 0;
 
-int scanAngles[SCAN_POINTS]   = {-90, -60, -30, 0, 30, 60, 90};
+int scanAngles[SCAN_POINTS]    = {-90, -60, -30, 0, 30, 60, 90};
 int scanDistances[SCAN_POINTS] = {999, 999, 999, 999, 999, 999, 999};
 int memory[SCAN_POINTS]        = {0};
 
@@ -242,6 +242,32 @@ int findOpenSpace()
   return -1;
 }
 
+void turnToAngle(int targetAngle)
+{
+  if(targetAngle > 0)
+  {
+    stopMotors();
+    delay(150);
+    resetAngle();
+    moveMotors(120, -120);
+    while(angle > -targetAngle) updateGyro();
+    stopMotors();
+    delay(200);
+    resetAngle();
+  }
+  else if(targetAngle < 0)
+  {
+    stopMotors();
+    delay(150);
+    resetAngle();
+    moveMotors(-120, 120);
+    while(angle < -targetAngle) updateGyro();
+    stopMotors();
+    delay(200);
+    resetAngle();
+  }
+}
+
 void setup()
 {
   Serial.begin(9600);
@@ -314,30 +340,7 @@ void loop()
       leds[0] = leds[1] = CRGB::Cyan;
       FastLED.show();
 
-      int targetAngle = scanAngles[seekIndex];
-
-      if(targetAngle > 0)
-      {
-        stopMotors();
-        delay(150);
-        resetAngle();
-        moveMotors(120, -120);
-        while(angle > -targetAngle) updateGyro();
-        stopMotors();
-        delay(200);
-        resetAngle();
-      }
-      else if(targetAngle < 0)
-      {
-        stopMotors();
-        delay(150);
-        resetAngle();
-        moveMotors(-120, 120);
-        while(angle < -targetAngle) updateGyro();
-        stopMotors();
-        delay(200);
-        resetAngle();
-      }
+      turnToAngle(scanAngles[seekIndex]);
     }
     else
     {
@@ -345,15 +348,14 @@ void loop()
 
       int bestAngle = findBestDirection();
 
-      moveMotors(-80, -80);
-      delay(400);
-      stopMotors();
-      delay(200);
-
       if(bestAngle > 20)
       {
         leds[0] = leds[1] = CRGB::Red;
         FastLED.show();
+        moveMotors(-80, -80);
+        delay(400);
+        stopMotors();
+        delay(200);
         turnRight90();
         numerOfRights++;
         lastTurn = 1;
@@ -362,6 +364,10 @@ void loop()
       {
         leds[0] = leds[1] = CRGB::Purple;
         FastLED.show();
+        moveMotors(-80, -80);
+        delay(400);
+        stopMotors();
+        delay(200);
         turnLeft90();
         numerOfLefts++;
         lastTurn = -1;
@@ -372,6 +378,10 @@ void loop()
         {
           leds[0] = leds[1] = CRGB::Yellow;
           FastLED.show();
+          moveMotors(-80, -80);
+          delay(400);
+          stopMotors();
+          delay(200);
           turnLeft90();
           lastTurn = -1;
         }
@@ -379,6 +389,10 @@ void loop()
         {
           leds[0] = leds[1] = CRGB::Orange;
           FastLED.show();
+          moveMotors(-80, -80);
+          delay(400);
+          stopMotors();
+          delay(200);
           turnRight90();
           lastTurn = 1;
         }
