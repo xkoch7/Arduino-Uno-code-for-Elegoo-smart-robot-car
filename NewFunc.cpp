@@ -23,23 +23,20 @@
 #define GYRO 0x68
 #define SCAN_POINTS 7
 
-// --- How many cm change between sweeps counts as a moving object ---
+// How many cm the closest reading must change to count as movement
 #define MOVEMENT_THRESHOLD 8
 
-// --- How many sweep samples must show movement before we start following ---
+// How many consecutive loops must see movement before following starts
 #define MOVEMENT_CONFIRM_COUNT 3
 
-// --- How far away (cm) we care about objects at all ---
-#define DETECTION_RANGE 80
+// How close (cm) an object must be to check for movement
+#define DETECTION_RANGE 30
 
-// --- Stop this close to the object we are following ---
+// Stop this close to the object being followed
 #define FOLLOW_STOP_DIST 12
 
-// --- How long (ms) to wait for a lost object before going back to autonomous ---
-#define LOST_TIMEOUT 1500
-
-// --- Servo sweep speed (radians per second, lower = slower sweep) ---
-#define SERVO_SWEEP_SPEED 0.04
+// Servo sweep speed (lower = slower)
+#define SERVO_SWEEP_SPEED 0.08
 
 CRGB leds[NUM_LEDS];
 Servo scanServo;
@@ -52,17 +49,16 @@ float angle = 0;
 float gyroOffset = 0;
 unsigned long lastTime = 0;
 
-int scanAngles[SCAN_POINTS]     = {-90, -60, -30, 0, 30, 60, 90};
-int scanDistances[SCAN_POINTS]  = {999, 999, 999, 999, 999, 999, 999};
-int prevDistances[SCAN_POINTS]  = {999, 999, 999, 999, 999, 999, 999};
-int memory[SCAN_POINTS]         = {0};
+int scanAngles[SCAN_POINTS]    = {-90, -60, -30, 0, 30, 60, 90};
+int scanDistances[SCAN_POINTS] = {999, 999, 999, 999, 999, 999, 999};
+int memory[SCAN_POINTS]        = {0};
 
 float servoPhase = 0.0;
 unsigned long lastServoUpdate = 0;
 
 bool following = false;
 int movementCount = 0;
-unsigned long lastSeenTime = 0;
+int prevClosest = 999;
 
 // ===================== MOTORS =====================
 
@@ -219,28 +215,6 @@ int findBestDirection() {
   return scanAngles[bestIndex];
 }
 
-// ===================== OBJECT TRACKING =====================
-
-// Returns index of closest point in scanDistances
-int closestIndex() {
-  int ci = 0, cd = 9999;
-  for (int i = 0; i < SCAN_POINTS; i++) {
-    if (scanDistances[i] < cd) { cd = scanDistances[i]; ci = i; }
-  }
-  return ci;
-}
-
-// Returns true if any scan point changed by more than MOVEMENT_THRESHOLD
-bool objectIsMoving() {
-  bool moving = false;
-  for (int i = 0; i < SCAN_POINTS; i++) {
-    if (abs(scanDistances[i] - prevDistances[i]) >= MOVEMENT_THRESHOLD)
-      moving = true;
-    prevDistances[i] = scanDistances[i];
-  }
-  return moving;
-}
-
 // ===================== SETUP =====================
 
 void setup() {
@@ -248,14 +222,18 @@ void setup() {
   FastLED.addLeds<NEOPIXEL, PIN_RBGLED>(leds, NUM_LEDS);
   FastLED.clear();
   FastLED.show();
+
+  // Servo is not touched here - it stays where it physically rests
   scanServo.attach(SERVO);
-  scanServo.write(90);
+
   setupMotors();
   setupGyro();
   calibrateGyro();
+
   pinMode(US_OUT, OUTPUT);
   pinMode(US_IN, INPUT);
   pinMode(BUTTON, INPUT_PULLUP);
+
   while (digitalRead(BUTTON) == HIGH);
   delay(200);
 }
@@ -265,14 +243,6 @@ void setup() {
 void loop() {
   updateGyro();
 
-  // Sweep servo and record distance at each scan angle
-  sweepServo();
-  int currentServoAngle = (int)(sin(servoPhase) * 90);
-  for (int i = 0; i < SCAN_POINTS; i++) {
-    if (abs(currentServoAngle - scanAngles[i]) <= 2)
-      scanDistances[i] = getDistance();
-  }
-
   // White line = hard stop
   if (analogRead(LEFT) <= L_TH && analogRead(MIDDLE) <= M_TH && analogRead(RIGHT) <= R_TH) {
     stopMotors();
@@ -281,37 +251,52 @@ void loop() {
     while (1);
   }
 
-  int ci   = closestIndex();
-  int dist = scanDistances[ci];
+  // Forward distance check
+  int dist = getDistance();
 
-  // Build confidence that object is actually moving before committing
-  if (objectIsMoving() && dist < DETECTION_RANGE) {
-    movementCount = min(movementCount + 1, MOVEMENT_CONFIRM_COUNT);
+  // Check if closest reading is changing - compare directly each loop
+  if (dist < DETECTION_RANGE) {
+    if (abs(dist - prevClosest) >= MOVEMENT_THRESHOLD)
+      movementCount = min(movementCount + 1, MOVEMENT_CONFIRM_COUNT);
+    else
+      movementCount = max(movementCount - 1, 0);
   } else {
     movementCount = max(movementCount - 1, 0);
   }
+
+  prevClosest = dist;
 
   if (movementCount >= MOVEMENT_CONFIRM_COUNT) following = true;
   if (movementCount == 0)                       following = false;
 
   // ---- FOLLOWING MODE ----
   if (following) {
-    lastSeenTime = millis();
-
     leds[0] = leds[1] = CRGB::Cyan;
     FastLED.show();
 
-    if (dist < FOLLOW_STOP_DIST) {
+    // Sweep servo and record distances at each scan angle
+    sweepServo();
+    int currentServoAngle = (int)(sin(servoPhase) * 90);
+    for (int i = 0; i < SCAN_POINTS; i++) {
+      if (abs(currentServoAngle - scanAngles[i]) <= 2)
+        scanDistances[i] = getDistance();
+    }
+
+    // Find closest angle
+    int ci = 0, cd = 9999;
+    for (int i = 0; i < SCAN_POINTS; i++) {
+      if (scanDistances[i] < cd) { cd = scanDistances[i]; ci = i; }
+    }
+
+    if (cd < FOLLOW_STOP_DIST) {
       stopMotors();
       return;
     }
 
-    // Steer proportionally toward the angle the object was seen at
-    float steer    = scanAngles[ci] / 90.0;
-    int baseSpeed  = map(dist, FOLLOW_STOP_DIST, DETECTION_RANGE, 50, 120);
-    int steerAmt   = (int)(steer * 70);
+    float steer   = scanAngles[ci] / 90.0;
+    int baseSpeed = map(cd, FOLLOW_STOP_DIST, DETECTION_RANGE, 50, 120);
+    int steerAmt  = (int)(steer * 70);
 
-    // If object is far to the side, do a full body turn toward it
     if (abs(scanAngles[ci]) >= 60) {
       scanAngles[ci] > 0 ? turnRight90() : turnLeft90();
       resetAngle();
@@ -320,7 +305,7 @@ void loop() {
                  constrain(baseSpeed - steerAmt, 0, 255));
     }
 
-  // ---- AUTONOMOUS MODE ----
+  // ---- AUTONOMOUS MODE - exactly skeleton shield ----
   } else {
 
     if (numerOfRights > 5) { turnLeft90();  numerOfRights = 0; }
