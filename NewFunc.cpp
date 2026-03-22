@@ -23,20 +23,19 @@
 #define GYRO 0x68
 #define SCAN_POINTS 7
 
+// How far before robot stops and sweeps to decide wall or object
 #define DETECTION_RANGE 15
 
-#define READINGS_PER_ANGLE 4
+// How much closer the nearest angle must be vs average to count as an object not a wall
+#define OBJECT_THRESHOLD 10
 
-// How many ms between readings at each angle during detection sweep
-#define READING_DELAY 150
-
-// Minimum delta (cm) across readings at an angle to count as a moving object
-#define MOVEMENT_THRESHOLD 5
-
-// Stop this close to the object being followed
+// Stop this close to whatever is being followed
 #define FOLLOW_STOP_DIST 12
 
-// How slow the follow sweep runs (lower = slower, more time per angle)
+// If closest reading goes above this during follow, object is gone
+#define FOLLOW_LOST_DIST 40
+
+// Servo sweep speed during follow mode
 #define SERVO_SWEEP_SPEED 0.05
 
 CRGB leds[NUM_LEDS];
@@ -50,10 +49,9 @@ float angle = 0;
 float gyroOffset = 0;
 unsigned long lastTime = 0;
 
-int scanAngles[SCAN_POINTS]     = {-90, -60, -30, 0, 30, 60, 90};
-int scanDistances[SCAN_POINTS]  = {999, 999, 999, 999, 999, 999, 999};
-int prevDistances[SCAN_POINTS]  = {999, 999, 999, 999, 999, 999, 999};
-int memory[SCAN_POINTS]         = {0};
+int scanAngles[SCAN_POINTS]    = {-90, -60, -30, 0, 30, 60, 90};
+int scanDistances[SCAN_POINTS] = {999, 999, 999, 999, 999, 999, 999};
+int memory[SCAN_POINTS]        = {0};
 
 float servoPhase = 0.0;
 unsigned long lastServoUpdate = 0;
@@ -195,37 +193,44 @@ void sweepServo() {
 }
 
 // ===================== DETECTION SWEEP =====================
-// Stops at each angle, takes READINGS_PER_ANGLE readings spaced
-// READING_DELAY ms apart, returns index of angle with highest delta.
-// If that delta is below MOVEMENT_THRESHOLD returns -1 (no moving object)
+// Sweeps all angles, returns index of closest reading if it is
+// OBJECT_THRESHOLD closer than the average of all other angles.
+// Returns -1 if nothing stands out meaning it is likely a wall.
 
 int detectionSweep() {
-  int bestIndex = -1;
-  int bestDelta = MOVEMENT_THRESHOLD;
-
   for (int i = 0; i < SCAN_POINTS; i++) {
     setServoLogical(scanAngles[i]);
-    delay(300); // settle time
+    delay(300);
+    scanDistances[i] = getDistance();
+  }
 
-    int minDist = 999, maxDist = 0;
-
-    for (int r = 0; r < READINGS_PER_ANGLE; r++) {
-      int d = getDistance();
-      if (d < minDist) minDist = d;
-      if (d > maxDist) maxDist = d;
-      delay(READING_DELAY);
-    }
-
-    int delta = maxDist - minDist;
-    scanDistances[i] = minDist; // store closest reading for wall avoidance fallback
-
-    if (delta > bestDelta) {
-      bestDelta = delta;
-      bestIndex = i;
+  // Find closest angle
+  int closestIndex = 0;
+  int closestDist = 999;
+  for (int i = 0; i < SCAN_POINTS; i++) {
+    if (scanDistances[i] < closestDist) {
+      closestDist = scanDistances[i];
+      closestIndex = i;
     }
   }
 
-  return bestIndex; // -1 = no movement found, 0-6 = index of most movement
+  // Average all other angles
+  long sum = 0;
+  int count = 0;
+  for (int i = 0; i < SCAN_POINTS; i++) {
+    if (i == closestIndex) continue;
+    if (scanDistances[i] < 999) { sum += scanDistances[i]; count++; }
+  }
+
+  // If nothing else registered just treat as wall
+  if (count == 0) return -1;
+
+  int avg = sum / count;
+
+  // If closest is meaningfully shorter than everything else it is an object
+  if ((avg - closestDist) >= OBJECT_THRESHOLD) return closestIndex;
+
+  return -1;
 }
 
 // ===================== WALL SCAN =====================
@@ -287,26 +292,21 @@ void loop() {
 
   int dist = getDistance();
 
-  // ---- OBJECT DETECTED - do detection sweep to decide ----
+  // ---- OBJECT DETECTED - sweep to decide wall or object ----
   if (dist < DETECTION_RANGE && !following) {
     stopMotors();
-
     leds[0] = leds[1] = CRGB::Yellow;
     FastLED.show();
 
-    int movingIndex = detectionSweep();
+    int objectIndex = detectionSweep();
 
-    if (movingIndex >= 0) {
-      // Moving object found - lock onto that angle and follow
+    if (objectIndex >= 0) {
+      // Closest point stands out - treat as object and follow it
       following = true;
-      followAngleIndex = movingIndex;
-
-      // Copy prevDistances so follow mode has a baseline to compare against
-      for (int i = 0; i < SCAN_POINTS; i++)
-        prevDistances[i] = scanDistances[i];
+      followAngleIndex = objectIndex;
 
     } else {
-      // Nothing moving - treat as wall
+      // Nothing stands out - treat as wall
       following = false;
 
       scanEnvironment();
@@ -340,7 +340,7 @@ void loop() {
     leds[0] = leds[1] = CRGB::Cyan;
     FastLED.show();
 
-    // Sweep and sample each angle
+    // Sweep and update distances
     sweepServo();
     int currentServoAngle = (int)(sin(servoPhase) * 90);
     for (int i = 0; i < SCAN_POINTS; i++) {
@@ -348,28 +348,20 @@ void loop() {
         scanDistances[i] = getDistance();
     }
 
-    // Find angle with most change since last sweep = where object is moving
-    int bestDelta = MOVEMENT_THRESHOLD;
-    int bestIndex = -1;
+    // Always chase the closest angle
+    int cd = 999;
     for (int i = 0; i < SCAN_POINTS; i++) {
-      int delta = abs(scanDistances[i] - prevDistances[i]);
-      if (delta > bestDelta) {
-        bestDelta = delta;
-        bestIndex = i;
+      if (scanDistances[i] < cd) {
+        cd = scanDistances[i];
+        followAngleIndex = i;
       }
-      prevDistances[i] = scanDistances[i];
     }
 
-    // If we still see movement update follow angle, otherwise keep last known
-    if (bestIndex >= 0) followAngleIndex = bestIndex;
-
-    // If no movement seen at all across entire sweep exit follow mode
-    if (bestIndex == -1 && dist > DETECTION_RANGE) {
+    // Object gone - return to roam
+    if (cd > FOLLOW_LOST_DIST) {
       following = false;
       return;
     }
-
-    int cd = scanDistances[followAngleIndex];
 
     if (cd < FOLLOW_STOP_DIST) {
       stopMotors();
@@ -377,10 +369,9 @@ void loop() {
     }
 
     float steer   = scanAngles[followAngleIndex] / 90.0;
-    int baseSpeed = map(cd, FOLLOW_STOP_DIST, DETECTION_RANGE, 50, 120);
+    int baseSpeed = map(cd, FOLLOW_STOP_DIST, FOLLOW_LOST_DIST, 50, 120);
     int steerAmt  = (int)(steer * 70);
 
-    // Hard turn if object is far to the side
     if (abs(scanAngles[followAngleIndex]) >= 60) {
       scanAngles[followAngleIndex] > 0 ? turnRight90() : turnLeft90();
       resetAngle();
