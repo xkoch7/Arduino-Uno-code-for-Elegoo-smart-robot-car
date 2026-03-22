@@ -23,10 +23,10 @@
 #define GYRO 0x68
 #define SCAN_POINTS 7
 
-// How far before robot stops and sweeps to decide wall or object
+// How far before robot stops and scans
 #define DETECTION_RANGE 15
 
-// How much closer the nearest angle must be vs average to count as an object
+// How much closer one angle must be vs the rest to count as an object not a wall
 #define OBJECT_THRESHOLD 10
 
 // Stop this close to whatever is being followed
@@ -181,15 +181,31 @@ void setServoLogical(int ang) {
   scanServo.write(constrain(ang, -90, 90) + 90);
 }
 
-// ===================== DETECTION SWEEP =====================
+// ===================== SCAN =====================
 
-int detectionSweep() {
+void scanEnvironment() {
   for (int i = 0; i < SCAN_POINTS; i++) {
     setServoLogical(scanAngles[i]);
-    delay(300);
-    scanDistances[i] = getDistance();
+    delay(250);
+    int d = getDistance();
+    scanDistances[i] = d;
+    memory[i] = (d < 25) ? min(memory[i] + 8, 50) : max(memory[i] - 2, 0);
   }
+  setServoLogical(0);
+}
 
+int findBestDirection() {
+  int bestIndex = 0, bestScore = -1000;
+  for (int i = 0; i < SCAN_POINTS; i++) {
+    int score = scanDistances[i] - memory[i] * 3;
+    if (score > bestScore) { bestScore = score; bestIndex = i; }
+  }
+  return scanAngles[bestIndex];
+}
+
+// Checks if any angle from the scan is significantly closer than
+// the average of all others - if yes that angle is an object not a wall
+int findObject() {
   int closestIndex = 0, closestDist = 999;
   for (int i = 0; i < SCAN_POINTS; i++) {
     if (scanDistances[i] < closestDist) {
@@ -210,28 +226,6 @@ int detectionSweep() {
   if ((avg - closestDist) >= OBJECT_THRESHOLD) return closestIndex;
 
   return -1;
-}
-
-// ===================== WALL SCAN =====================
-
-void scanEnvironment() {
-  for (int i = 0; i < SCAN_POINTS; i++) {
-    setServoLogical(scanAngles[i]);
-    delay(250);
-    int d = getDistance();
-    scanDistances[i] = d;
-    memory[i] = (d < 25) ? min(memory[i] + 8, 50) : max(memory[i] - 2, 0);
-  }
-  setServoLogical(0);
-}
-
-int findBestDirection() {
-  int bestIndex = 0, bestScore = -1000;
-  for (int i = 0; i < SCAN_POINTS; i++) {
-    int score = scanDistances[i] - memory[i] * 3;
-    if (score > bestScore) { bestScore = score; bestIndex = i; }
-  }
-  return scanAngles[bestIndex];
 }
 
 // ===================== SETUP =====================
@@ -270,22 +264,23 @@ void loop() {
 
   int dist = getDistance();
 
-  // ---- OBJECT DETECTED - sweep to decide wall or object ----
+  // ---- SOMETHING CLOSE - scan and decide ----
   if (dist < DETECTION_RANGE && !following) {
     stopMotors();
     leds[0] = leds[1] = CRGB::Yellow;
     FastLED.show();
 
-    int objectIndex = detectionSweep();
+    // One scan gives us everything we need
+    scanEnvironment();
+    int objectIndex = findObject();
 
     if (objectIndex >= 0) {
+      // One angle stood out as much closer than the rest - follow it
       following = true;
       followAngleIndex = objectIndex;
 
     } else {
-      following = false;
-
-      scanEnvironment();
+      // All angles similar - it is a wall, pick best direction
       int bestAngle = findBestDirection();
 
       moveMotors(-80, -80);
@@ -316,14 +311,14 @@ void loop() {
     leds[0] = leds[1] = CRGB::Cyan;
     FastLED.show();
 
-    // Discrete sweep - one reading per angle back to back
+    // Discrete sweep to find where object is now
     for (int i = 0; i < SCAN_POINTS; i++) {
       setServoLogical(scanAngles[i]);
       delay(FOLLOW_ANGLE_DELAY);
       scanDistances[i] = getDistance();
     }
 
-    // Find closest angle
+    // Chase the closest angle
     int cd = 999;
     for (int i = 0; i < SCAN_POINTS; i++) {
       if (scanDistances[i] < cd) {
