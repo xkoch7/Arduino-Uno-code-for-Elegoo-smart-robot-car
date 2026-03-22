@@ -23,20 +23,21 @@
 #define GYRO 0x68
 #define SCAN_POINTS 7
 
-// How many cm the closest reading must change to count as movement
-#define MOVEMENT_THRESHOLD 8
+#define DETECTION_RANGE 15
 
-// How many consecutive loops must see movement before following starts
-#define MOVEMENT_CONFIRM_COUNT 3
+#define READINGS_PER_ANGLE 4
 
-// How close (cm) an object must be to check for movement
-#define DETECTION_RANGE 30
+// How many ms between readings at each angle during detection sweep
+#define READING_DELAY 150
+
+// Minimum delta (cm) across readings at an angle to count as a moving object
+#define MOVEMENT_THRESHOLD 5
 
 // Stop this close to the object being followed
 #define FOLLOW_STOP_DIST 12
 
-// Servo sweep speed (lower = slower)
-#define SERVO_SWEEP_SPEED 0.08
+// How slow the follow sweep runs (lower = slower, more time per angle)
+#define SERVO_SWEEP_SPEED 0.05
 
 CRGB leds[NUM_LEDS];
 Servo scanServo;
@@ -49,16 +50,16 @@ float angle = 0;
 float gyroOffset = 0;
 unsigned long lastTime = 0;
 
-int scanAngles[SCAN_POINTS]    = {-90, -60, -30, 0, 30, 60, 90};
-int scanDistances[SCAN_POINTS] = {999, 999, 999, 999, 999, 999, 999};
-int memory[SCAN_POINTS]        = {0};
+int scanAngles[SCAN_POINTS]     = {-90, -60, -30, 0, 30, 60, 90};
+int scanDistances[SCAN_POINTS]  = {999, 999, 999, 999, 999, 999, 999};
+int prevDistances[SCAN_POINTS]  = {999, 999, 999, 999, 999, 999, 999};
+int memory[SCAN_POINTS]         = {0};
 
 float servoPhase = 0.0;
 unsigned long lastServoUpdate = 0;
 
 bool following = false;
-int movementCount = 0;
-int prevClosest = 999;
+int followAngleIndex = 3;
 
 // ===================== MOTORS =====================
 
@@ -193,7 +194,41 @@ void sweepServo() {
   setServoLogical((int)(sin(servoPhase) * 90));
 }
 
-// ===================== SCAN (autonomous wall avoidance) =====================
+// ===================== DETECTION SWEEP =====================
+// Stops at each angle, takes READINGS_PER_ANGLE readings spaced
+// READING_DELAY ms apart, returns index of angle with highest delta.
+// If that delta is below MOVEMENT_THRESHOLD returns -1 (no moving object)
+
+int detectionSweep() {
+  int bestIndex = -1;
+  int bestDelta = MOVEMENT_THRESHOLD;
+
+  for (int i = 0; i < SCAN_POINTS; i++) {
+    setServoLogical(scanAngles[i]);
+    delay(300); // settle time
+
+    int minDist = 999, maxDist = 0;
+
+    for (int r = 0; r < READINGS_PER_ANGLE; r++) {
+      int d = getDistance();
+      if (d < minDist) minDist = d;
+      if (d > maxDist) maxDist = d;
+      delay(READING_DELAY);
+    }
+
+    int delta = maxDist - minDist;
+    scanDistances[i] = minDist; // store closest reading for wall avoidance fallback
+
+    if (delta > bestDelta) {
+      bestDelta = delta;
+      bestIndex = i;
+    }
+  }
+
+  return bestIndex; // -1 = no movement found, 0-6 = index of most movement
+}
+
+// ===================== WALL SCAN =====================
 
 void scanEnvironment() {
   for (int i = 0; i < SCAN_POINTS; i++) {
@@ -223,7 +258,6 @@ void setup() {
   FastLED.clear();
   FastLED.show();
 
-  // Servo is not touched here - it stays where it physically rests
   scanServo.attach(SERVO);
 
   setupMotors();
@@ -251,73 +285,37 @@ void loop() {
     while (1);
   }
 
-  // Forward distance check
   int dist = getDistance();
 
-  // Check if closest reading is changing - compare directly each loop
-  if (dist < DETECTION_RANGE) {
-    if (abs(dist - prevClosest) >= MOVEMENT_THRESHOLD)
-      movementCount = min(movementCount + 1, MOVEMENT_CONFIRM_COUNT);
-    else
-      movementCount = max(movementCount - 1, 0);
-  } else {
-    movementCount = max(movementCount - 1, 0);
-  }
+  // ---- OBJECT DETECTED - do detection sweep to decide ----
+  if (dist < DETECTION_RANGE && !following) {
+    stopMotors();
 
-  prevClosest = dist;
-
-  if (movementCount >= MOVEMENT_CONFIRM_COUNT) following = true;
-  if (movementCount == 0)                       following = false;
-
-  // ---- FOLLOWING MODE ----
-  if (following) {
-    leds[0] = leds[1] = CRGB::Cyan;
+    leds[0] = leds[1] = CRGB::Yellow;
     FastLED.show();
 
-    // Sweep servo and record distances at each scan angle
-    sweepServo();
-    int currentServoAngle = (int)(sin(servoPhase) * 90);
-    for (int i = 0; i < SCAN_POINTS; i++) {
-      if (abs(currentServoAngle - scanAngles[i]) <= 2)
-        scanDistances[i] = getDistance();
-    }
+    int movingIndex = detectionSweep();
 
-    // Find closest angle
-    int ci = 0, cd = 9999;
-    for (int i = 0; i < SCAN_POINTS; i++) {
-      if (scanDistances[i] < cd) { cd = scanDistances[i]; ci = i; }
-    }
+    if (movingIndex >= 0) {
+      // Moving object found - lock onto that angle and follow
+      following = true;
+      followAngleIndex = movingIndex;
 
-    if (cd < FOLLOW_STOP_DIST) {
-      stopMotors();
-      return;
-    }
+      // Copy prevDistances so follow mode has a baseline to compare against
+      for (int i = 0; i < SCAN_POINTS; i++)
+        prevDistances[i] = scanDistances[i];
 
-    float steer   = scanAngles[ci] / 90.0;
-    int baseSpeed = map(cd, FOLLOW_STOP_DIST, DETECTION_RANGE, 50, 120);
-    int steerAmt  = (int)(steer * 70);
-
-    if (abs(scanAngles[ci]) >= 60) {
-      scanAngles[ci] > 0 ? turnRight90() : turnLeft90();
-      resetAngle();
     } else {
-      moveMotors(constrain(baseSpeed + steerAmt, 0, 255),
-                 constrain(baseSpeed - steerAmt, 0, 255));
-    }
+      // Nothing moving - treat as wall
+      following = false;
 
-  // ---- AUTONOMOUS MODE - exactly skeleton shield ----
-  } else {
-
-    if (numerOfRights > 5) { turnLeft90();  numerOfRights = 0; }
-    if (numerOfLefts  > 5) { turnRight90(); numerOfLefts  = 0; }
-
-    if (dist < 10) {
-      leds[0] = leds[1] = CRGB::Blue;
-      FastLED.show();
-      stopMotors();
-      delay(200);
       scanEnvironment();
       int bestAngle = findBestDirection();
+
+      moveMotors(-80, -80);
+      delay(400);
+      stopMotors();
+      delay(200);
 
       if (bestAngle > 20) {
         leds[0] = leds[1] = CRGB::Red; FastLED.show();
@@ -335,12 +333,70 @@ void loop() {
         }
       }
       resetAngle();
-
-    } else {
-      leds[0] = leds[1] = CRGB::Green;
-      FastLED.show();
-      int speed = constrain(map(dist, 10, 80, 60, 150), 60, 150);
-      driveStraight(speed);
     }
+
+  // ---- FOLLOW MODE ----
+  } else if (following) {
+    leds[0] = leds[1] = CRGB::Cyan;
+    FastLED.show();
+
+    // Sweep and sample each angle
+    sweepServo();
+    int currentServoAngle = (int)(sin(servoPhase) * 90);
+    for (int i = 0; i < SCAN_POINTS; i++) {
+      if (abs(currentServoAngle - scanAngles[i]) <= 2)
+        scanDistances[i] = getDistance();
+    }
+
+    // Find angle with most change since last sweep = where object is moving
+    int bestDelta = MOVEMENT_THRESHOLD;
+    int bestIndex = -1;
+    for (int i = 0; i < SCAN_POINTS; i++) {
+      int delta = abs(scanDistances[i] - prevDistances[i]);
+      if (delta > bestDelta) {
+        bestDelta = delta;
+        bestIndex = i;
+      }
+      prevDistances[i] = scanDistances[i];
+    }
+
+    // If we still see movement update follow angle, otherwise keep last known
+    if (bestIndex >= 0) followAngleIndex = bestIndex;
+
+    // If no movement seen at all across entire sweep exit follow mode
+    if (bestIndex == -1 && dist > DETECTION_RANGE) {
+      following = false;
+      return;
+    }
+
+    int cd = scanDistances[followAngleIndex];
+
+    if (cd < FOLLOW_STOP_DIST) {
+      stopMotors();
+      return;
+    }
+
+    float steer   = scanAngles[followAngleIndex] / 90.0;
+    int baseSpeed = map(cd, FOLLOW_STOP_DIST, DETECTION_RANGE, 50, 120);
+    int steerAmt  = (int)(steer * 70);
+
+    // Hard turn if object is far to the side
+    if (abs(scanAngles[followAngleIndex]) >= 60) {
+      scanAngles[followAngleIndex] > 0 ? turnRight90() : turnLeft90();
+      resetAngle();
+    } else {
+      moveMotors(constrain(baseSpeed + steerAmt, 0, 255),
+                 constrain(baseSpeed - steerAmt, 0, 255));
+    }
+
+  // ---- ROAM MODE ----
+  } else {
+    if (numerOfRights > 5) { turnLeft90(); numerOfRights = 0; }
+    if (numerOfLefts  > 5) { turnRight90(); numerOfLefts = 0; }
+
+    leds[0] = leds[1] = CRGB::Green;
+    FastLED.show();
+    int speed = constrain(map(dist, 10, 80, 60, 150), 60, 150);
+    driveStraight(speed);
   }
 }
