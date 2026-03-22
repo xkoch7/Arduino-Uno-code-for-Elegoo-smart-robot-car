@@ -200,32 +200,32 @@ int findBestDirection() {
 // Returns index of angle that is OBJECT_THRESHOLD closer than
 // the forward reading (index 3). Returns -1 if nothing stands out.
 int findObject() {
-  // Find furthest angle
-  int furthestIndex = 0, furthestDist = 0;
-  for (int i = 0; i < SCAN_POINTS; i++) {
-    if (scanDistances[i] > furthestDist && scanDistances[i] < 999) {
-      furthestDist = scanDistances[i];
-      furthestIndex = i;
+  int closestIndex = -1, closestDist = 999;
+
+  // Only check middle 5 angles, skip -90 and 90 (indices 0 and 6)
+  for (int i = 1; i < SCAN_POINTS - 1; i++) {
+    if (scanDistances[i] < closestDist) {
+      closestDist = scanDistances[i];
+      closestIndex = i;
     }
   }
 
-  // Average everything else
+  if (closestIndex == -1) return -1;
+
+  // Average everything else including side angles
   long sum = 0; int count = 0;
   for (int i = 0; i < SCAN_POINTS; i++) {
-    if (i == furthestIndex) continue;
+    if (i == closestIndex) continue;
     if (scanDistances[i] < 999) { sum += scanDistances[i]; count++; }
   }
 
   if (count == 0) return -1;
 
   int avg = sum / count;
-
-  // If furthest is significantly more open than the rest drive toward it
-  if (furthestDist - avg >= OBJECT_THRESHOLD) return furthestIndex;
+  if ((avg - closestDist) >= OBJECT_THRESHOLD) return closestIndex;
 
   return -1;
 }
-
 // ===================== SETUP =====================
 
 void setup() {
