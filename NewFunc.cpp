@@ -200,19 +200,25 @@ int findBestDirection() {
 // Returns index of angle that is OBJECT_THRESHOLD closer than
 // the forward reading (index 3). Returns -1 if nothing stands out.
 int findObject() {
-  int wallDist = scanDistances[3]; // forward = the wall we drove into
-  int closestIndex = -1;
-  int closestDist = wallDist - OBJECT_THRESHOLD;
-
+  // Find closest angle
+  int closestIndex = 0, closestDist = 999;
   for (int i = 0; i < SCAN_POINTS; i++) {
-    if (i == 3) continue;
     if (scanDistances[i] < closestDist) {
       closestDist = scanDistances[i];
       closestIndex = i;
     }
   }
 
-  return closestIndex;
+  // Average everything else
+  long sum = 0; int count = 0;
+  for (int i = 0; i < SCAN_POINTS; i++) {
+    if (i == closestIndex) continue;
+    if (scanDistances[i] < 999) { sum += scanDistances[i]; count++; }
+  }
+
+  if (count == 0) return -1;
+  if ((sum / count) - closestDist >= OBJECT_THRESHOLD) return closestIndex;
+  return -1;
 }
 
 // ===================== SETUP =====================
@@ -261,23 +267,31 @@ void loop() {
     int objectIndex = findObject();
 
     if (objectIndex >= 0) {
-      // Something closer than the wall at this angle - turn and drive to it
+      // Something closer than the wall - turn to face it exactly
       following = true;
-      followAngleIndex = objectIndex;
-
       leds[0] = leds[1] = CRGB::Cyan;
       FastLED.show();
 
-      // Turn to face that angle
-      if (scanAngles[followAngleIndex] > 20) {
-        turnRight90();
-      } else if (scanAngles[followAngleIndex] < -20) {
-        turnLeft90();
+      int targetAngle = scanAngles[objectIndex];
+
+      if (targetAngle > 0) {
+        stopMotors(); delay(150);
+        resetAngle();
+        moveMotors(120, -120);
+        while (angle > -targetAngle) updateGyro();
+        stopMotors(); delay(200);
+        resetAngle();
+      } else if (targetAngle < 0) {
+        stopMotors(); delay(150);
+        resetAngle();
+        moveMotors(-120, 120);
+        while (angle < -targetAngle) updateGyro();
+        stopMotors(); delay(200);
+        resetAngle();
       }
-      resetAngle();
 
     } else {
-      // Nothing closer than wall - standard wall avoidance
+      // Nothing stood out - it is a wall, do standard avoidance
       following = false;
       int bestAngle = findBestDirection();
 
@@ -304,16 +318,14 @@ void loop() {
       resetAngle();
     }
 
-  // ---- DRIVE - either roaming or heading toward object ----
+  // ---- DRIVE ----
   } else {
     if (numerOfRights > 5) { turnLeft90(); numerOfRights = 0; }
     if (numerOfLefts  > 5) { turnRight90(); numerOfLefts = 0; }
 
-    if (following) {
-      leds[0] = leds[1] = CRGB::Cyan;
-    } else {
-      leds[0] = leds[1] = CRGB::Green;
-    }
+    following = false;
+
+    leds[0] = leds[1] = CRGB::Green;
     FastLED.show();
 
     int speed = constrain(map(dist, 10, 80, 60, 150), 60, 150);
